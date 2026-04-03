@@ -1,0 +1,113 @@
+name: $(date:yyyyMMdd)$((rev:.r)
+
+variables:
+  - name: business
+    value: "api"
+  - name: prefix
+    value: consumer
+
+  - group: 'API_PIPELINE_USER'
+  - group: 'API_PIPELINE_APP_USER'
+
+trigger:
+  branches:
+    include:
+      - 'main'
+
+resources:
+  repositories:
+    - repository: 'azure-repo'
+      type: git
+      name: 'utility_script'
+      ref: release/1.0
+
+stages:
+  - stage: 'Build application code'
+    variables:
+      - group: JAVA_ENV_21
+
+    jobs:
+      job: 'build'
+      displayName: 'Build Application'
+      pool: 'linux001'
+      workspace:
+        clean: all
+      steps:
+        - checkout: 'self'
+        - checkout: 'azure-repo'
+
+        - task: Maven@1
+          displayName: 'Maven Package'
+          inputs:
+            mavenPomFile: '(Build.SourceDirectory)/$(Build.Repository.Name)/pom.xml'
+            options: ' -Dinstance-type=test'
+            buildName: '$(Build.DefitionName)'
+            buildNumber: '$(build.BuildNumber)'
+            collectbuildinfo: true
+          env:
+            JAVA_HOME: env.$JAVA
+   
+        - task:CopyFile@2
+          displayName: 'Maven Package'
+          inputs:
+            SourceFolder: '(Build.SourceDirectory)/$(Build.Repository.Name)'
+            Contents: |
+              !**/*sources*
+              apps/*/*
+              apps/*/*/*
+              pom.xml
+              Dockerfile
+              target/*.jar
+            TargetFolder: '$(Build.ArtifactStagingDirectory)'
+            CleanTargetFolder: true
+            OverWrite: true
+
+        - task: PublishBuildArtifacts@1
+          inputs:
+            PathtoPublish: '$Build.ArtifactStagingDirectory)'
+            ArtifactName: appfile
+            publishLocation: 'Container'
+
+  - stage: 'dkrimage'
+    displayName: 'Build and Push Docker Image'
+    dependsOn: build
+    condition: and(sucseeded(), ne(variables['Build.SourceBranceName'], 'main')
+    jobs:
+      - job: 'builddckimage'
+        displayName: 
+        pool:
+        workspace:
+          clean: 'all'
+        steps:
+          - checkout: 'self'
+          - checkout: 'utility_scripts'
+          - download: 'current'
+            artifact: 'appfile'
+
+
+    variables:
+    awsRegion: 'ap-southeast-1'   # change to your AWS region
+    ecrRepository: 'consumer-app-repo'  # your ECR repo name
+    imageTag: 'V1.0'
+
+ 
+    - script: |
+      pip install awscli
+      displayName: 'Install AWS CLI'
+
+    - script: |
+      aws ecr get-login-password --region $(awsRegion) \
+        | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.$(awsRegion).amazonaws.com
+      displayName: 'Login to Amazon ECR'
+
+    - script: |
+        docker build -t $(ecrRepository):$(imageTag) .
+      displayName: 'Build Docker image'
+
+    - script: |
+        docker tag $(ecrRepository):$(imageTag) <AWS_ACCOUNT_ID>.dkr.ecr.$(awsRegion).amazonaws.com/$(ecrRepository):$(imageTag)
+      displayName: 'Tag Docker image'
+
+    - script: |
+        docker push <AWS_ACCOUNT_ID>.dkr.ecr.$(awsRegion).amazonaws.com/$(ecrRepository):$(imageTag)
+      displayName: 'Push Docker image to ECR'
